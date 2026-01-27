@@ -1,3 +1,14 @@
-# blockchain-os
+# Blockchain-Based Distributed Operating System (CLI)
 
-A Simulated Blockchain-based distributed operating system that demonstrates how blockchain can be used to manage system resources securely, transparently, and fairly across multiple nodes.
+This project is a Python-based simulation of a blockchain-powered
+distributed operating system developed for DCIT 301.
+
+## Features
+- Decentralized resource management
+- Blockchain-backed audit logging
+- Majority-vote consensus
+- Command-line interface demo
+
+## Run
+```bash
+python main.py
