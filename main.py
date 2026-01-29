@@ -2,7 +2,8 @@
 Main entry point for the Blockchain-Based Distributed Operating System (CLI).
 Responsible for initializing and connecting all system components.
 """
-
+from cli.cli import run_cli
+    
 def main():
     print("Blockchain-Based Distributed OS CLI")
     print("System initialized. Use --help for available commands.")
@@ -10,3 +11,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    run_cli()
