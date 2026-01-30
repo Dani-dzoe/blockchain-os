@@ -1,449 +1,306 @@
 """
-Command Line Interface for the blockchain-based distributed operating system demo.
+Integrated CLI for the blockchain-based distributed operating system demo.
 
-This module provides a beginner-friendly argparse-based CLI.
-It keeps a simple in-memory simulation of nodes, resource allocations,
-transactions, blocks, and a very small consensus mechanism (majority vote).
+This CLI wires together the project's modules:
+- core.node.Node
+- core.transaction.Transaction
+- core.blockchain.Blockchain
+- resources.resource_manager.ResourceManager
+- auth.auth.AuthManager
+- consensus.consensus.ConsensusEngine
+- logger.audit_logger
 
-Design notes for students:
-- This CLI intentionally simulates networking and consensus locally.
-- Resource updates (allocate/release) are applied only after a simulated
-  consensus step that approves a proposed block containing the transaction.
-- The blockchain acts as an immutable audit log; each block records the
-  transactions it contains and a hash linking to the previous block.
-
-Commands provided:
-- add_node: register a new simulated node with optional resource quotas
-- request_resource: request allocation of a resource (CPU/Memory/Storage/Bandwidth)
-- release_resource: release previously allocated resources
-- view_chain: print the blockchain contents (blocks + transactions)
-- validate_chain: check chain integrity by verifying hashes and links
-
-The module is self-contained so it integrates cleanly into the rest of
-the academic demo project (it avoids importing the other skeletal modules
-which may be intentionally left incomplete for the exercise).
-
+It accepts commands to add nodes, request/release resources, view and validate
+the blockchain. All state is stored in memory for the lifetime of the process.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple
+
+from core.node import Node
+from core.transaction import Transaction
+from core.blockchain import Blockchain, Block
+from resources.resource_manager import ResourceManager
+from auth.auth import AuthManager
+from consensus.consensus import ConsensusEngine, validate_block_structure
+from logger.audit_logger import log_event, print_audit_log
+from logger.audit_logger import set_events, get_events
+from persistence import save_state, load_state, DEFAULT_STATE_FILE
 
 
-# -- Data models used only within this CLI (kept simple and educational) --
+class IntegratedCLI:
+    """Controller-oriented CLI that links the project's components.
 
-@dataclass
-class NodeState:
-    """Stores per-node information: identifier, quotas and current allocations.
-
-    Quotas and allocations are simple dictionaries keyed by resource name
-    (e.g., 'CPU', 'Memory', 'Storage', 'Bandwidth'). Values are numeric.
+    This class keeps in-memory instances of the modules and exposes methods
+    called by the command-line interface. It demonstrates the intended
+    interactions between components in a clear and modular way.
     """
 
-    node_id: str
-    quotas: Dict[str, float] = field(default_factory=dict)
-    allocated: Dict[str, float] = field(default_factory=dict)
-
-    def __post_init__(self):
-        # Ensure all quota keys exist for the standard resources
-        for r in Controller.VALID_RESOURCES:
-            self.quotas.setdefault(r, 0.0)
-            self.allocated.setdefault(r, 0.0)
-
-
-@dataclass
-class Transaction:
-    """Represents a single resource operation to be recorded in a block.
-
-    Fields:
-        node_id: requester node
-        resource_type: one of Controller.VALID_RESOURCES
-        amount: positive number
-        transaction_type: 'allocate' or 'release'
-        timestamp: epoch float for ordering and reproducibility
-    """
-
-    node_id: str
-    resource_type: str
-    amount: float
-    transaction_type: str
-    timestamp: float = field(default_factory=time.time)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "node_id": self.node_id,
-            "resource_type": self.resource_type,
-            "amount": self.amount,
-            "transaction_type": self.transaction_type,
-            "timestamp": self.timestamp,
-        }
-
-    def __str__(self) -> str:
-        return (
-            f"{self.transaction_type.upper():8} | {self.amount:>6} {self.resource_type:8} "
-            f"| node={self.node_id} | ts={self.timestamp:.3f}"
-        )
-
-
-@dataclass
-class Block:
-    """Simple block structure for the demonstration blockchain.
-
-    Fields:
-        index: block height (0-based)
-        timestamp: block creation time
-        transactions: list of Transaction objects
-        previous_hash: hex string of previous block's hash
-        hash: computed hash for this block (set after creation)
-    """
-
-    index: int
-    timestamp: float
-    transactions: List[Transaction]
-    previous_hash: str
-    hash: Optional[str] = None
-
-    def compute_hash(self) -> str:
-        """Computes a SHA-256 hash of this block's canonical representation.
-
-        We create a deterministic JSON string of the block content (ordering
-        matters). This simple scheme is sufficient for an educational demo.
-        """
-        block_content = {
-            "index": self.index,
-            "timestamp": self.timestamp,
-            "transactions": [t.to_dict() for t in self.transactions],
-            "previous_hash": self.previous_hash,
-        }
-        serialized = json.dumps(block_content, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(serialized).hexdigest()
-
-
-class ConsensusError(Exception):
-    """Raised when consensus does not reach a majority approval."""
-
-
-class Controller:
-    """Central controller used by the CLI to manage simulated state.
-
-    This class is intentionally simple and stores everything in memory. It
-    demonstrates the ordering: validation -> consensus -> state update ->
-    append block to chain.
-    """
-
-    VALID_RESOURCES = ["CPU", "Memory", "Storage", "Bandwidth"]
-
-    def __init__(self):
-        # map node_id -> NodeState
-        self.nodes: Dict[str, NodeState] = {}
-        # the blockchain (list of Block objects)
-        self.chain: List[Block] = []
-
-        # Initialize genesis block
-        genesis = Block(index=0, timestamp=time.time(), transactions=[], previous_hash="0")
-        genesis.hash = genesis.compute_hash()
-        self.chain.append(genesis)
+    def __init__(self, difficulty: int = 2, state_file: str = None):
+        # Core components
+        self.blockchain = Blockchain(difficulty=difficulty)
+        self.resource_manager = ResourceManager()
+        self.auth = AuthManager()
+        # consensus engine is created once there are nodes; keep None until then
+        self.consensus: Optional[ConsensusEngine] = None
+        # Persistence
+        self.state_file = DEFAULT_STATE_FILE if state_file is None else DEFAULT_STATE_FILE.parent.joinpath(state_file)
+        # Attempt to load existing state
+        self._load_state()
 
     # ---------------- Node management ----------------
-    def add_node(self, node_id: str, quotas: Optional[Dict[str, float]] = None) -> None:
-        """Register a new node with optional resource quotas.
+    def add_node(self, node_id: str, quotas: Dict[str, float]) -> str:
+        """Register a new node with quotas, issue token, and add to resource manager.
 
-        Raises ValueError on invalid input (empty id or duplicate node).
+        Returns a short human-readable message.
         """
         node_id = node_id.strip()
         if not node_id:
             raise ValueError("node_id cannot be empty")
-        if node_id in self.nodes:
+        if node_id in self.resource_manager.nodes:
             raise ValueError(f"Node '{node_id}' already exists")
 
-        quotas = quotas or {}
-        # Normalize quotas and ensure they are non-negative numbers
-        normalized = {}
-        for r in self.VALID_RESOURCES:
-            v = float(quotas.get(r, 0.0)) if quotas.get(r) is not None else 0.0
-            if v < 0:
-                raise ValueError(f"Quota for {r} must be non-negative")
-            normalized[r] = v
+        node = Node(node_id=node_id, quotas=quotas)
+        self.resource_manager.register_node(node)
+        token = self.auth.get_token_for(node_id)
+        # Recreate consensus engine with updated node list
+        self._update_consensus_engine()
 
-        self.nodes[node_id] = NodeState(node_id=node_id, quotas=normalized)
+        msg = f"Node '{node_id}' added. Token: {token}"
+        log_event(node_id, 'add_node', 'created', {'quotas': quotas})
+        # Persist state
+        self._save_state()
+        return msg
 
-    # ---------------- Transaction lifecycle ----------------
-    def _validate_request(self, node_id: str, resource_type: str, amount: float, tx_type: str) -> None:
-        """Internal validation for requests/releases.
+    def _update_consensus_engine(self):
+        """Recreate consensus engine from current registered nodes."""
+        node_list = list(self.resource_manager.nodes.values())
+        if not node_list:
+            self.consensus = None
+            return
+        # Create a new consensus engine (vote threshold default majority)
+        self.consensus = ConsensusEngine(node_list)
+        # After updating consensus, save the state
+        self._save_state()
 
-        Ensures node exists, resource type is valid, amount is positive and
-        that quotas/allocations make sense for the operation.
-        Raises ValueError on invalid requests.
+    # ---------------- Resource operations ----------------
+    def request_resource(self, node_id: str, resource: str, amount: float) -> str:
+        """Process a resource allocation request: validate, propose block, run consensus, apply.
+
+        This function demonstrates the pipeline: validate inputs -> build transaction ->
+        build block and mine -> ask consensus -> on approval apply to resource manager and append to chain.
         """
-        if node_id not in self.nodes:
-            raise ValueError(f"Node '{node_id}' does not exist")
-        if resource_type not in self.VALID_RESOURCES:
-            raise ValueError(f"resource_type must be one of {self.VALID_RESOURCES}")
+        # Basic validations
+        if node_id not in self.resource_manager.nodes:
+            raise ValueError(f"Unknown node: {node_id}")
+        if resource not in self.resource_manager.nodes[node_id].quotas:
+            raise ValueError(f"Invalid resource: {resource}")
         if amount <= 0:
-            raise ValueError("amount must be greater than zero")
+            raise ValueError("Amount must be greater than zero")
 
-        node = self.nodes[node_id]
-        if tx_type == "allocate":
-            if node.allocated[resource_type] + amount > node.quotas[resource_type]:
-                raise ValueError(
-                    f"Allocation rejected: would exceed quota ({node.allocated[resource_type]} + {amount} > {node.quotas[resource_type]})"
-                )
-        elif tx_type == "release":
-            if amount > node.allocated[resource_type]:
-                raise ValueError(
-                    f"Release rejected: node only has {node.allocated[resource_type]} {resource_type} allocated"
-                )
-        else:
-            raise ValueError("transaction_type must be 'allocate' or 'release'")
+        # Check node-level quota
+        if not self.resource_manager.can_allocate(node_id, resource, amount):
+            raise ValueError(f"Allocation would exceed quota for {node_id}")
 
-    def _create_block_with_single_tx(self, tx: Transaction) -> Block:
-        """Create a new block containing a single transaction and compute its hash."""
-        index = len(self.chain)
-        previous_hash = self.chain[-1].hash or ""
-        block = Block(index=index, timestamp=time.time(), transactions=[tx], previous_hash=previous_hash)
-        block.hash = block.compute_hash()
-        return block
+        # Build transaction (validated by Transaction class)
+        tx = Transaction(node_id=node_id, resource_type=resource, amount=amount, transaction_type='allocate')
 
-    def _simulate_consensus(self, block: Block) -> bool:
-        """Simulates a simple majority-vote consensus among registered nodes.
+        # Build a candidate block (not appended yet)
+        index = len(self.blockchain.chain)
+        prev_hash = self.blockchain.chain[-1].hash if self.blockchain.chain else '0'
+        block = Block(index=index, timestamp=time.time(), transactions=[tx.to_dict()], previous_hash=prev_hash)
+        # Mine block (compute nonce and hash)
+        block.hash = self.blockchain.proof_of_work(block)
 
-        For deterministic and predictable demo behavior, every node votes
-        'yes' unless the block contains an operation that would be invalid
-        when applied (this should not happen because we pre-validate). In
-        a larger simulation you could randomize or introduce faults.
-        """
-        total = len(self.nodes)
-        if total == 0:
-            # No nodes => cannot reach consensus
-            return False
+        # Ensure we have a consensus engine
+        if not self.consensus:
+            raise RuntimeError("No consensus nodes available; add nodes before proposing blocks")
 
-        # For demo purposes, assume all nodes vote yes
-        yes_votes = total
-        # Majority needed strictly greater than half
-        return yes_votes > (total // 2)
-
-    def _apply_transaction(self, tx: Transaction) -> None:
-        """Apply an already-approved transaction to node state.
-
-        This modifies the in-memory allocations. Only called after consensus.
-        """
-        node = self.nodes[tx.node_id]
-        if tx.transaction_type == "allocate":
-            node.allocated[tx.resource_type] += tx.amount
-        elif tx.transaction_type == "release":
-            node.allocated[tx.resource_type] -= tx.amount
-            # Guard against negative rounding issues
-            if node.allocated[tx.resource_type] < 1e-12:
-                node.allocated[tx.resource_type] = 0.0
-        else:
-            raise ValueError("Unknown transaction type when applying to state")
-
-    def propose_and_commit(self, tx: Transaction) -> Tuple[bool, Optional[str]]:
-        """Propose a block containing tx, run consensus, and commit on success.
-
-        Returns (True, block_hash) on success. On consensus failure returns
-        (False, reason).
-        """
-        # Create block
-        block = self._create_block_with_single_tx(tx)
-
-        # Simulate majority consensus
-        approved = self._simulate_consensus(block)
+        # Ask for consensus with a simple pre-validation function
+        approved, details = self.consensus.request_consensus(block, validate_block_structure)
         if not approved:
-            return False, "Consensus failed: majority not reached"
+            log_event(node_id, 'request_resource', 'rejected', {'reason': details.get('reason')})
+            raise RuntimeError(f"Consensus rejected the block: {details}")
 
-        # Commit: apply transaction to state then append block to chain
-        self._apply_transaction(tx)
-        self.chain.append(block)
-        return True, block.hash
+        # On approval, apply allocation and append block to blockchain
+        self.resource_manager.apply_allocation(node_id, resource, amount)
+        self.blockchain.chain.append(block)
+        log_event(node_id, 'request_resource', 'accepted', {'resource': resource, 'amount': amount, 'block_hash': block.hash})
+        self._save_state()
+        return f"Allocation accepted and committed in block {block.index} (hash={block.hash})"
 
-    # ---------------- Public CLI-facing operations ----------------
-    def request_resource(self, node_id: str, resource_type: str, amount: float) -> str:
-        """Handle a resource allocation request from a node.
+    def release_resource(self, node_id: str, resource: str, amount: float) -> str:
+        """Process a resource release request similar to request_resource."""
+        if node_id not in self.resource_manager.nodes:
+            raise ValueError(f"Unknown node: {node_id}")
+        if amount <= 0:
+            raise ValueError("Amount must be greater than zero")
+        if not self.resource_manager.nodes[node_id].can_release(resource, amount):
+            raise ValueError(f"Node {node_id} does not have {amount} {resource} allocated")
 
-        Validates the request, proposes a block and runs consensus. On success
-        returns a human-readable success message. Raises ValueError for input
-        validation failures and ConsensusError if consensus fails.
-        """
-        # Validate inputs and quotas first
-        self._validate_request(node_id, resource_type, amount, "allocate")
+        tx = Transaction(node_id=node_id, resource_type=resource, amount=amount, transaction_type='release')
 
-        tx = Transaction(node_id=node_id, resource_type=resource_type, amount=amount, transaction_type="allocate")
+        index = len(self.blockchain.chain)
+        prev_hash = self.blockchain.chain[-1].hash if self.blockchain.chain else '0'
+        block = Block(index=index, timestamp=time.time(), transactions=[tx.to_dict()], previous_hash=prev_hash)
+        block.hash = self.blockchain.proof_of_work(block)
 
-        approved, info = self.propose_and_commit(tx)
+        if not self.consensus:
+            raise RuntimeError("No consensus nodes available; add nodes before proposing blocks")
+
+        approved, details = self.consensus.request_consensus(block, validate_block_structure)
         if not approved:
-            raise ConsensusError(info)
+            log_event(node_id, 'release_resource', 'rejected', {'reason': details.get('reason')})
+            raise RuntimeError(f"Consensus rejected the block: {details}")
 
-        return f"Resource allocated: {amount} {resource_type} to {node_id}. Block hash: {info}"
+        # Apply release and append block
+        self.resource_manager.apply_release(node_id, resource, amount)
+        self.blockchain.chain.append(block)
+        log_event(node_id, 'release_resource', 'accepted', {'resource': resource, 'amount': amount, 'block_hash': block.hash})
+        self._save_state()
+        return f"Release accepted and committed in block {block.index} (hash={block.hash})"
 
-    def release_resource(self, node_id: str, resource_type: str, amount: float) -> str:
-        """Handle releasing resources for a node (similar to request_resource)."""
-        self._validate_request(node_id, resource_type, amount, "release")
-
-        tx = Transaction(node_id=node_id, resource_type=resource_type, amount=amount, transaction_type="release")
-
-        approved, info = self.propose_and_commit(tx)
-        if not approved:
-            raise ConsensusError(info)
-
-        return f"Resource released: {amount} {resource_type} from {node_id}. Block hash: {info}"
-
-    def view_chain(self) -> List[Block]:
-        """Return the chain for printing. The genesis block is index 0."""
-        return list(self.chain)
+    # ---------------- Viewing and validation ----------------
+    def view_chain(self) -> List[Dict[str, Any]]:
+        """Return a serialized view of the blockchain for printing."""
+        return self.blockchain.to_dict()
 
     def validate_chain(self) -> Tuple[bool, str]:
-        """Validate the blockchain integrity by recomputing hashes and links.
+        """Validate blockchain integrity and return (ok, reason)."""
+        return self.blockchain.is_chain_valid()
 
-        Returns (True, message) if valid, otherwise (False, explanation).
-        """
-        if not self.chain:
-            return False, "Empty chain"
-        for i, block in enumerate(self.chain):
-            expected_hash = block.compute_hash()
-            if block.hash != expected_hash:
-                return False, f"Block {i} hash mismatch: expected {expected_hash} got {block.hash}"
-            if i == 0:
-                # genesis previous_hash should be '0'
-                if block.previous_hash != "0":
-                    return False, "Genesis block has invalid previous_hash"
-            else:
-                prev = self.chain[i - 1]
-                if block.previous_hash != prev.hash:
-                    return False, f"Block {i} previous_hash does not match hash of block {i-1}"
-        return True, "Chain is valid"
+    # ---------------- Persistence ----------------
+    def _load_state(self):
+        data = load_state(self.state_file)
+        # Load nodes
+        nodes = data.get('nodes', [])
+        from core.node import Node as CoreNode
+        for nd in nodes:
+            node = CoreNode.from_dict(nd)
+            try:
+                self.resource_manager.register_node(node)
+            except ValueError:
+                # ignore duplicates on load
+                pass
+        # Load chain
+        chain_data = data.get('chain', [])
+        if chain_data:
+            self.blockchain = Blockchain.from_dict(chain_data, difficulty=self.blockchain.difficulty)
+        # Load audit events
+        audit_events = data.get('audit_events', [])
+        if audit_events:
+            set_events(audit_events)
+        # Update consensus engine after load
+        self._update_consensus_engine()
 
+    def _save_state(self):
+        nodes = [n.to_dict() for n in self.resource_manager.nodes.values()]
+        chain = self.blockchain.to_dict()
+        audit_events = get_events()
+        save_state(self.state_file, nodes=nodes, chain=chain, audit_events=audit_events)
 
-# ---------------- Command-line interface wiring ----------------
+# ---------------- Command-line wiring ----------------
+
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the top-level argparse.ArgumentParser with subcommands."""
-    parser = argparse.ArgumentParser(
-        prog="blockchain-os-cli",
-        description="CLI demo for a blockchain-based distributed operating system",
-    )
+    p = argparse.ArgumentParser(prog='blockchain-os-integrated', description='Integrated CLI for the blockchain OS demo')
+    sub = p.add_subparsers(dest='command', required=True)
 
-    sub = parser.add_subparsers(dest="command", required=True, help="Available commands")
+    p_add = sub.add_parser('add_node', help='Register a node with quotas')
+    p_add.add_argument('node_id')
+    p_add.add_argument('--cpu', type=float, default=0.0)
+    p_add.add_argument('--memory', type=float, default=0.0)
+    p_add.add_argument('--storage', type=float, default=0.0)
+    p_add.add_argument('--bandwidth', type=float, default=0.0)
 
-    # add_node
-    p_add = sub.add_parser("add_node", help="Register a new node with optional resource quotas")
-    p_add.add_argument("node_id", help="Unique identifier for the node")
-    p_add.add_argument("--cpu", type=float, default=0.0, help="CPU quota for the node (numeric)")
-    p_add.add_argument("--memory", type=float, default=0.0, help="Memory quota for the node")
-    p_add.add_argument("--storage", type=float, default=0.0, help="Storage quota for the node")
-    p_add.add_argument("--bandwidth", type=float, default=0.0, help="Bandwidth quota for the node")
+    p_req = sub.add_parser('request_resource', help='Request allocation')
+    p_req.add_argument('node_id')
+    p_req.add_argument('resource', choices=['CPU', 'Memory', 'Storage', 'Bandwidth'])
+    p_req.add_argument('amount', type=float)
 
-    # request_resource
-    p_req = sub.add_parser("request_resource", help="Request allocation of a resource for a node")
-    p_req.add_argument("node_id", help="Node requesting the resource")
-    p_req.add_argument("resource", choices=Controller.VALID_RESOURCES, help="Resource type to request")
-    p_req.add_argument("amount", type=float, help="Amount to request (positive number)")
+    p_rel = sub.add_parser('release_resource', help='Release allocated resource')
+    p_rel.add_argument('node_id')
+    p_rel.add_argument('resource', choices=['CPU', 'Memory', 'Storage', 'Bandwidth'])
+    p_rel.add_argument('amount', type=float)
 
-    # release_resource
-    p_rel = sub.add_parser("release_resource", help="Release allocated resource for a node")
-    p_rel.add_argument("node_id", help="Node releasing the resource")
-    p_rel.add_argument("resource", choices=Controller.VALID_RESOURCES, help="Resource type to release")
-    p_rel.add_argument("amount", type=float, help="Amount to release (positive number)")
+    sub.add_parser('view_chain', help='Print blockchain')
+    sub.add_parser('validate_chain', help='Validate blockchain integrity')
+    sub.add_parser('print_audit', help='Print audit log events')
 
-    # view_chain
-    sub.add_parser("view_chain", help="Print the blockchain (blocks and transactions)")
-
-    # validate_chain
-    sub.add_parser("validate_chain", help="Validate blockchain integrity by recomputing hashes")
-
-    return parser
+    return p
 
 
-def pretty_print_chain(chain: List[Block]) -> None:
-    """Prints the blockchain in a human-readable step-by-step format.
-
-    This function is deliberately verbose to serve as an educational aid.
-    """
-    print("\n==== Blockchain (most recent last) ====")
-    for block in chain:
-        print(f"\nBlock {block.index} | ts={block.timestamp:.3f} | hash={block.hash}")
-        print(f"  previous_hash: {block.previous_hash}")
-        if not block.transactions:
-            print("  (no transactions in this block)")
-        for tx in block.transactions:
-            print("  -", str(tx))
-    print("\n====================================\n")
+def pretty_print_chain(serialized_chain: List[Dict[str, Any]]):
+    print('\n==== Blockchain (most recent last) ====')
+    for b in serialized_chain:
+        print(f"\nBlock {b['index']} | ts={b['timestamp']:.3f} | hash={b['hash']}")
+        print(f"  previous_hash: {b['previous_hash']}")
+        txs = b.get('transactions', [])
+        if not txs:
+            print('  (no transactions)')
+        for tx in txs:
+            print('  -', tx)
+    print('\n====================================\n')
 
 
 def run_cli(argv: Optional[List[str]] = None) -> int:
-    """Entry point for the CLI. Parses args, executes commands and returns an exit code.
-
-    The function returns 0 on success and non-zero on failures. This design allows
-    easy invocation from other scripts or unit tests.
-    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    controller = Controller()
+    cli = IntegratedCLI(difficulty=2)
 
     try:
-        if args.command == "add_node":
-            quotas = {
-                "CPU": args.cpu,
-                "Memory": args.memory,
-                "Storage": args.storage,
-                "Bandwidth": args.bandwidth,
-            }
-            controller.add_node(args.node_id, quotas=quotas)
-            print(f"Node '{args.node_id}' added with quotas: {quotas}")
-
-        elif args.command == "request_resource":
-            msg = controller.request_resource(args.node_id, args.resource, args.amount)
+        if args.command == 'add_node':
+            quotas = {'CPU': args.cpu, 'Memory': args.memory, 'Storage': args.storage, 'Bandwidth': args.bandwidth}
+            msg = cli.add_node(args.node_id, quotas)
             print(msg)
-            # Show node allocation after successful commit for clarity
-            node = controller.nodes[args.node_id]
-            print(f"Current allocation for {args.node_id}: {node.allocated}")
 
-        elif args.command == "release_resource":
-            msg = controller.release_resource(args.node_id, args.resource, args.amount)
+        elif args.command == 'request_resource':
+            msg = cli.request_resource(args.node_id, args.resource, args.amount)
             print(msg)
-            node = controller.nodes[args.node_id]
-            print(f"Current allocation for {args.node_id}: {node.allocated}")
+            # Show allocation
+            print('Allocation state:', cli.resource_manager.get_status()['nodes'].get(args.node_id))
 
-        elif args.command == "view_chain":
-            chain = controller.view_chain()
-            pretty_print_chain(chain)
+        elif args.command == 'release_resource':
+            msg = cli.release_resource(args.node_id, args.resource, args.amount)
+            print(msg)
+            print('Allocation state:', cli.resource_manager.get_status()['nodes'].get(args.node_id))
 
-        elif args.command == "validate_chain":
-            ok, reason = controller.validate_chain()
+        elif args.command == 'view_chain':
+            serialized = cli.view_chain()
+            pretty_print_chain(serialized)
+
+        elif args.command == 'validate_chain':
+            ok, reason = cli.validate_chain()
             if ok:
-                print("Blockchain validation: OK - ", reason)
+                print('Blockchain validation: OK -', reason)
             else:
-                print("Blockchain validation: FAILED - ", reason)
+                print('Blockchain validation: FAILED -', reason)
                 return 2
 
+        elif args.command == 'print_audit':
+            print_audit_log()
+
         else:
-            # Should not happen because argparse enforces choices
             parser.print_help()
             return 1
 
     except ValueError as ve:
-        print(f"Input error: {ve}")
+        print('Input error:', ve)
         return 2
-    except ConsensusError as ce:
-        print(f"Consensus error: {ce}")
+    except RuntimeError as re:
+        print('Runtime error:', re)
         return 3
     except Exception as e:
-        # Catch-all for unexpected exceptions; print a helpful message but
-        # avoid leaking sensitive info; include exception type and message.
-        print(f"Unexpected error ({type(e).__name__}): {e}")
+        print(f'Unexpected error ({type(e).__name__}):', e)
         return 4
 
     return 0
 
 
-# When executed as a script, run the CLI with sys.argv[1:]
-if __name__ == "__main__":
-    exit_code = run_cli(sys.argv[1:])
-    sys.exit(exit_code)
+if __name__ == '__main__':
+    sys.exit(run_cli(sys.argv[1:]))

@@ -1,1 +1,8 @@
-python>=3.9
+# Blockchain-Based Distributed Operating System
+# Python 3.9+ required
+
+# Testing
+pytest>=7.0.0
+
+# Note: This project uses only Python standard library
+# No external dependencies needed for core functionality
