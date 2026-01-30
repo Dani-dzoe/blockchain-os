@@ -113,13 +113,73 @@ class MainController:
                 return {"success": True, "message": "Audit log retrieved", "data": {"events": events}}
 
             elif cmd == 'status':
+                # Gather comprehensive system status
+                nodes = self.cli.resource_manager.nodes
+                chain_length = len(self.cli.blockchain.chain)
+
+                # Calculate total resources
+                total_allocated = {'CPU': 0.0, 'Memory': 0.0, 'Storage': 0.0, 'Bandwidth': 0.0}
+                total_quotas = {'CPU': 0.0, 'Memory': 0.0, 'Storage': 0.0, 'Bandwidth': 0.0}
+
+                for node in nodes.values():
+                    for resource in ['CPU', 'Memory', 'Storage', 'Bandwidth']:
+                        total_allocated[resource] += node.allocated.get(resource, 0.0)
+                        total_quotas[resource] += node.quotas.get(resource, 0.0)
+
                 st = {
-                    'time': datetime.now().isoformat(),
-                    'nodes': list(self.cli.resource_manager.nodes.keys()),
-                    'blocks': len(self.cli.blockchain.chain),
-                    'difficulty': self.cli.blockchain.difficulty,
+                    'timestamp': datetime.now().isoformat(),
+                    'node_count': len(nodes),
+                    'node_ids': list(nodes.keys()),
+                    'blockchain': {
+                        'total_blocks': chain_length,
+                        'difficulty': self.cli.blockchain.difficulty,
+                        'last_block_hash': self.cli.blockchain.chain[-1].hash[:16] + '...' if chain_length > 0 else 'N/A'
+                    },
+                    'resources': {
+                        'total_quotas': total_quotas,
+                        'total_allocated': total_allocated,
+                        'utilization': {
+                            res: f"{(total_allocated[res]/total_quotas[res]*100):.1f}%" if total_quotas[res] > 0 else "0.0%"
+                            for res in ['CPU', 'Memory', 'Storage', 'Bandwidth']
+                        }
+                    },
+                    'consensus': {
+                        'total_nodes': len(nodes),
+                        'votes_required': len(nodes) // 2 + 1 if len(nodes) > 0 else 0,
+                        'vote_threshold': '50.0%'
+                    }
                 }
-                return {"success": True, "message": "System status", "data": st}
+
+                # Format a nice status display
+                status_msg = f"""
+╔══════════════════════════════════════════════════════════════╗
+║              BLOCKCHAIN OS - SYSTEM STATUS                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+⏰ Timestamp: {st['timestamp']}
+
+📊 NODES ({st['node_count']} total)
+   Registered: {', '.join(st['node_ids']) if st['node_ids'] else 'None'}
+
+⛓️  BLOCKCHAIN
+   Total Blocks: {st['blockchain']['total_blocks']}
+   Mining Difficulty: {st['blockchain']['difficulty']}
+   Last Block Hash: {st['blockchain']['last_block_hash']}
+
+💾 RESOURCE UTILIZATION
+   CPU:       {st['resources']['total_allocated']['CPU']:.1f} / {st['resources']['total_quotas']['CPU']:.1f} ({st['resources']['utilization']['CPU']})
+   Memory:    {st['resources']['total_allocated']['Memory']:.1f} / {st['resources']['total_quotas']['Memory']:.1f} ({st['resources']['utilization']['Memory']})
+   Storage:   {st['resources']['total_allocated']['Storage']:.1f} / {st['resources']['total_quotas']['Storage']:.1f} ({st['resources']['utilization']['Storage']})
+   Bandwidth: {st['resources']['total_allocated']['Bandwidth']:.1f} / {st['resources']['total_quotas']['Bandwidth']:.1f} ({st['resources']['utilization']['Bandwidth']})
+
+🗳️  CONSENSUS
+   Active Nodes: {st['consensus']['total_nodes']}
+   Votes Required: {st['consensus']['votes_required']} of {st['consensus']['total_nodes']}
+   Threshold: {st['consensus']['vote_threshold']}
+
+════════════════════════════════════════════════════════════════
+"""
+                return {"success": True, "message": status_msg.strip(), "data": st}
 
             elif cmd == 'help':
                 help_text = """

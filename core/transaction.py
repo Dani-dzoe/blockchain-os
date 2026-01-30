@@ -15,7 +15,7 @@ import time
 
 
 VALID_RESOURCES = ["CPU", "Memory", "Storage", "Bandwidth"]
-VALID_TYPES = ["allocate", "release"]
+VALID_TYPES = ["allocate", "release", "add_node"]
 
 
 @dataclass
@@ -51,8 +51,11 @@ class Transaction:
             self.amount = float(self.amount)
         except Exception:
             raise ValueError("amount must be a number")
-        if self.amount <= 0:
+        # For add_node transactions, amount can be 0
+        if self.transaction_type != 'add_node' and self.amount <= 0:
             raise ValueError("amount must be greater than zero")
+        if self.amount < 0:
+            raise ValueError("amount cannot be negative")
 
         # Validate transaction_type
         if self.transaction_type not in VALID_TYPES:

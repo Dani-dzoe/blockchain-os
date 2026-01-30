@@ -12,16 +12,26 @@ quick local demo (single-process, in-memory):
 - Print audit log
 
 Run: python3 main.py
+
+Note: This demo starts with a clean state each time (removes system_state.json)
 """
 
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from cli.cli import IntegratedCLI
 from logger.audit_logger import print_audit_log
 
 
 def demo_sequence():
+    # Clean state file before starting to ensure fresh demo
+    state_file = Path("system_state.json")
+    if state_file.exists():
+        print("Cleaning previous state for fresh demo...\n")
+        state_file.unlink()
+
     cli = IntegratedCLI(difficulty=2)
 
     print("Starting demo sequence...\n")
@@ -52,3 +62,5 @@ def demo_sequence():
 
 if __name__ == '__main__':
     demo_sequence()
+
+

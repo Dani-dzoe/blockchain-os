@@ -54,7 +54,7 @@ class IntegratedCLI:
 
     # ---------------- Node management ----------------
     def add_node(self, node_id: str, quotas: Dict[str, float]) -> str:
-        """Register a new node with quotas, issue token, and add to resource manager.
+        """Register a new node with quotas, issue token, and record in blockchain.
 
         Returns a short human-readable message.
         """
@@ -64,14 +64,45 @@ class IntegratedCLI:
         if node_id in self.resource_manager.nodes:
             raise ValueError(f"Node '{node_id}' already exists")
 
+        # Create the node
         node = Node(node_id=node_id, quotas=quotas)
         self.resource_manager.register_node(node)
         token = self.auth.get_token_for(node_id)
+
         # Recreate consensus engine with updated node list
         self._update_consensus_engine()
 
+        # Create a transaction to record node addition in blockchain
+        # Note: We use 'CPU' as resource_type since Transaction requires a valid resource
+        # The transaction_type 'add_node' indicates this is node registration, not resource allocation
+        tx = Transaction(
+            node_id=node_id,
+            resource_type='CPU',  # Placeholder - actual meaning is in transaction_type
+            amount=0.0,
+            transaction_type='add_node'
+        )
+
+        # Create and mine a block for this transaction
+        index = len(self.blockchain.chain)
+        prev_hash = self.blockchain.chain[-1].hash if self.blockchain.chain else '0'
+        block = Block(index=index, timestamp=time.time(), transactions=[tx.to_dict()], previous_hash=prev_hash)
+        block.hash = self.blockchain.proof_of_work(block)
+
+        # If we have consensus engine (multiple nodes), get approval
+        if self.consensus:
+            approved, details = self.consensus.request_consensus(block, validate_block_structure)
+            if not approved:
+                # Rollback: remove the node that was just added
+                del self.resource_manager.nodes[node_id]
+                log_event(node_id, 'add_node', 'rejected_by_consensus', {'reason': details.get('reason')})
+                self._save_state()
+                raise RuntimeError(f"Node addition rejected by consensus: {details}")
+
+        # Add block to blockchain
+        self.blockchain.chain.append(block)
+
         msg = f"Node '{node_id}' added. Token: {token}"
-        log_event(node_id, 'add_node', 'created', {'quotas': quotas})
+        log_event(node_id, 'add_node', 'created', {'quotas': quotas, 'block_hash': block.hash})
         # Persist state
         self._save_state()
         return msg

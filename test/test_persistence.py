@@ -157,9 +157,12 @@ class TestOrchestratorCommands:
 
             result = controller.handle_command("status")
             assert result["success"] is True
-            assert "time" in result["data"]
-            assert "nodes" in result["data"]
-            assert "blocks" in result["data"]
+            assert "timestamp" in result["data"]
+            assert "node_ids" in result["data"]
+            assert "blockchain" in result["data"]
+            assert "total_blocks" in result["data"]["blockchain"]
+            assert "resources" in result["data"]
+            assert "consensus" in result["data"]
 
 
 class TestStatePersistence:
@@ -247,7 +250,8 @@ class TestSocketAPI:
 
                 assert response["success"] is True
                 assert "data" in response
-                assert "blocks" in response["data"]
+                assert "blockchain" in response["data"]
+                assert "total_blocks" in response["data"]["blockchain"]
 
                 client.close()
 
