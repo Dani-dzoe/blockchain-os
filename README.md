@@ -429,6 +429,200 @@ State is automatically saved after:
 
 No manual save command needed!
 
+## Core Features Demonstration
+
+This project implements and demonstrates six key blockchain and distributed systems concepts:
+
+### 1. 🔗 Basic Blockchain for Resource Tracking
+
+Every resource operation (allocation/release) is recorded as a transaction in an immutable blockchain.
+
+**Implementation:**
+- Each block contains transactions, cryptographic hash, and link to previous block
+- SHA-256 hashing ensures immutability
+- Proof-of-Work mining adds computational security
+- Chain validation detects any tampering
+
+**Demo:**
+```bash
+blockchain-os> request_resource alice CPU 2.0
+blockchain-os> view_chain  # See transaction in blockchain
+blockchain-os> validate_chain  # Verify integrity
+```
+
+**Key Benefits:**
+- Complete audit trail of resource usage
+- Cannot modify historical records
+- Transparent resource tracking
+
+---
+
+### 2. 🗳️ Consensus Mechanism for Distributed Decisions
+
+Before any resource allocation is committed, all nodes vote on whether to approve it. Majority rule applies.
+
+**Implementation:**
+- Simulated voting among all registered nodes
+- Each node validates transaction independently
+- Block accepted only if ≥50% approve
+- Voting process displayed in real-time
+
+**Demo:**
+```bash
+blockchain-os> add_node alice 4.0 8.0
+blockchain-os> add_node bob 4.0 8.0
+blockchain-os> add_node charlie 4.0 8.0
+blockchain-os> request_resource alice CPU 2.0
+# Watch: [CONSENSUS VOTING] shows all nodes voting
+```
+
+**Key Benefits:**
+- Decentralized decision making
+- No single point of control
+- Democratic system governance
+- Protection against malicious nodes
+
+---
+
+### 3. 📋 Immutable Audit Logs
+
+Every system action is logged with timestamp and stored permanently in both blockchain and audit log.
+
+**Implementation:**
+- All operations logged (successful and failed)
+- Logs include: timestamp, node_id, action, outcome
+- Persisted to JSON (survives restarts)
+- Cannot be deleted or modified
+
+**Demo:**
+```bash
+blockchain-os> print_audit  # View complete history
+```
+
+**Key Benefits:**
+- Complete accountability
+- Forensic analysis capability
+- Compliance and auditing support
+- Incident investigation
+
+---
+
+### 4. 📜 Smart Contracts for Resource Allocation
+
+Resource rules are enforced automatically by code ("smart contracts"). Invalid requests are rejected before consensus.
+
+**Implementation:**
+- Quota enforcement: allocation ≤ quota
+- Input validation: amount > 0, valid resource type
+- Release validation: can only release allocated resources
+- Pre-consensus validation saves resources
+
+**Demo:**
+```bash
+blockchain-os> add_node alice 4.0 8.0
+blockchain-os> request_resource alice CPU 2.0  # ✅ Valid
+blockchain-os> request_resource alice CPU 5.0  # ❌ Exceeds quota
+blockchain-os> request_resource alice CPU -1.0 # ❌ Invalid amount
+```
+
+**Key Benefits:**
+- Automatic policy enforcement
+- Prevents over-allocation
+- Consistent rule application
+- No human intervention needed
+
+---
+
+### 5. 🔐 Distributed Authentication
+
+Each node receives a unique cryptographic token on registration. Operations require authentication.
+
+**Implementation:**
+- SHA-256 token generation
+- Token verification before operations
+- Distributed identity management
+- No central authentication server
+
+**Demo:**
+```bash
+blockchain-os> add_node alice 4.0 8.0
+# Output: Token: dcd6c5a9d3484e1ef7a0efd0c1172bba...
+blockchain-os> request_resource alice CPU 2.0  # ✅ Authenticated
+blockchain-os> request_resource dave CPU 1.0   # ❌ Not registered
+```
+
+**Key Benefits:**
+- Access control
+- Prevents unauthorized operations
+- Identity verification
+- Impersonation protection
+
+---
+
+### 6. 🛡️ Security Benefits
+
+Blockchain provides multi-layer security through cryptography, consensus, and immutability.
+
+**Implementation:**
+- **File Integrity**: SHA-256 checksum detects manual tampering
+- **Blockchain Validation**: Hash recomputation catches modifications
+- **Chain Linking**: Previous hash links detect break in chain
+- **Proof-of-Work**: Mining difficulty adds computational security
+- **Consensus**: Majority voting prevents single-node attacks
+
+**Demo (Manual Tampering):**
+```bash
+# Create clean state
+rm -f system_state.json
+python3 controller.py
+add_node alice 4.0 8.0
+request_resource alice CPU 2.0
+validate_chain  # Shows: ✅ Chain is valid
+exit
+
+# Tamper with file (edit system_state.json)
+python3 << 'EOF'
+import json
+with open('system_state.json', 'r') as f:
+    data = json.load(f)
+# Change alice's CPU from 2.0 to 999.0
+data['nodes'][0]['allocated']['CPU'] = 999.0
+with open('system_state.json', 'w') as f:
+    json.dump(data, f, indent=2)
+print('✓ File tampered!')
+EOF
+
+# Restart and detect tampering
+python3 controller.py
+# Output: ⚠️ FILE INTEGRITY CHECK FAILED - Checksum mismatch detected!
+validate_chain
+# Output: 🚨 FILE TAMPERING DETECTED ON LOAD - Checksum mismatch!
+```
+
+**Or run the automated demo:**
+```bash
+bash demo_tamper_detection.sh
+```
+
+**Key Benefits:**
+- Immediate tamper detection (before operations)
+- Cannot cover tracks (checksum validation)
+- Multi-layer defense (checksum + blockchain + consensus)
+- Complete audit trail
+
+---
+
+### 📊 Full Demo Scripts & Documentation
+
+For complete presentations demonstrating all six features:
+
+1. **[PRESENTATION_GUIDE.md](docs/PRESENTATION_GUIDE.md)** - Detailed 15-20 minute demo with all features
+2. **[PRESENTATION_CHEAT_SHEET.md](docs/PRESENTATION_CHEAT_SHEET.md)** - Quick reference with commands
+3. **[SECURITY_DEMO.md](docs/SECURITY_DEMO.md)** - Detailed security & tamper detection demo
+4. **[demo_tamper_detection.sh](demo_tamper_detection.sh)** - Automated tamper detection script
+
+---
+
 ## Testing
 
 ### Run All Tests

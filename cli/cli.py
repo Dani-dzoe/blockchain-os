@@ -49,6 +49,9 @@ class IntegratedCLI:
         self.consensus: Optional[ConsensusEngine] = None
         # Persistence
         self.state_file = DEFAULT_STATE_FILE if state_file is None else DEFAULT_STATE_FILE.parent.joinpath(state_file)
+        # Track if file has been tampered with
+        self.file_tampered = False
+        self.tamper_message = ""
         # Attempt to load existing state
         self._load_state()
 
@@ -201,12 +204,48 @@ class IntegratedCLI:
         return self.blockchain.to_dict()
 
     def validate_chain(self) -> Tuple[bool, str]:
-        """Validate blockchain integrity and return (ok, reason)."""
-        return self.blockchain.is_chain_valid()
+        """Validate blockchain integrity and file integrity.
+
+        Checks:
+        1. File was not tampered with on load
+        2. Blockchain structural integrity (hashes, links, PoW)
+        3. File checksum to detect manual tampering since last load
+
+        Returns (ok, reason).
+        """
+        # Check if tampering was detected on load
+        if self.file_tampered:
+            return False, f"🚨 FILE TAMPERING DETECTED ON LOAD:\n   {self.tamper_message}"
+
+        # Check blockchain structural integrity
+        bc_ok, bc_reason = self.blockchain.is_chain_valid()
+
+        # Check file integrity (checksum) again
+        from persistence import verify_data_integrity, load_state
+        loaded = load_state(self.state_file)
+        file_ok, file_reason = loaded.get('integrity_ok', True), loaded.get('integrity_msg', 'OK')
+
+        if not bc_ok:
+            return False, f"Blockchain invalid: {bc_reason}"
+
+        if not file_ok:
+            return False, f"🚨 FILE TAMPERING DETECTED:\n   {file_reason}"
+
+        return True, "✅ Chain is valid"
 
     # ---------------- Persistence ----------------
     def _load_state(self):
         data = load_state(self.state_file)
+
+        # Check file integrity
+        if not data.get('integrity_ok', True):
+            self.file_tampered = True
+            self.tamper_message = data.get('integrity_msg', 'Unknown error')
+            print(f"\n⚠️  ⚠️  ⚠️  SECURITY ALERT ⚠️  ⚠️  ⚠️")
+            print(f"FILE INTEGRITY CHECK FAILED!")
+            print(f"The state file may have been tampered with.")
+            print(f"Details: {self.tamper_message}\n")
+
         # Load nodes
         nodes = data.get('nodes', [])
         from core.node import Node as CoreNode

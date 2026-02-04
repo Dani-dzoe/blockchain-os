@@ -105,7 +105,10 @@ class MainController:
 
             elif cmd == 'validate_chain':
                 ok, reason = self.cli.validate_chain()
-                return {"success": True, "message": reason, "data": {"valid": ok}}
+                if ok:
+                    return {"success": True, "message": reason, "data": {"valid": ok}}
+                else:
+                    return {"success": False, "message": reason, "data": {"valid": ok}}
 
             elif cmd == 'print_audit':
                 from logger.audit_logger import get_events

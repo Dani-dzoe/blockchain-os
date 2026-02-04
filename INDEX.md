@@ -162,3 +162,26 @@ pytest -v
 ---
 **Made with ❤️ for DCIT 301 - Operating Systems Fundamentals**  
 **Group 49, University of Ghana, 2025/2026**
+---
+## 🎬 DEMO MATERIALS
+### Ready to Present?
+**[DEMO_SCRIPT.md](DEMO_SCRIPT.md)** - Complete Demo Guide
+- Full 15-20 minute presentation script
+- Step-by-step instructions with explanations
+- What to say to your colleagues
+- Q&A preparation included
+- Demonstrates ALL principles and components
+**[DEMO_CHEAT_SHEET.md](DEMO_CHEAT_SHEET.md)** - Quick Reference Card
+- All commands in sequence
+- Key phrases to use
+- Timing breakdown
+- Emergency commands
+- **Print this out and keep it handy!**
+### Demo Sequence Overview:
+1. Introduction (2 min)
+2. Quick demo with `python main.py` (3 min)
+3. Interactive REPL session (8 min)
+4. Persistence demonstration (2 min)
+5. Tamper detection proof (3 min)
+6. Test suite validation (2 min)
+**Total: 15-20 minutes**
